@@ -1,0 +1,1326 @@
+<roblox version="4">
+  <Item class="ReplicatedStorage" referent="0">
+    <Properties>
+      <string name="Name">ReplicatedStorage</string>
+    </Properties>
+    <Item class="Folder" referent="1">
+      <Properties>
+        <string name="Name">MatchState</string>
+      </Properties>
+    </Item>
+    <Item class="Folder" referent="2">
+      <Properties>
+        <string name="Name">Shared</string>
+      </Properties>
+      <Item class="ModuleScript" referent="3">
+        <Properties>
+          <string name="Name">Config</string>
+          <string name="Source"><![CDATA[--!strict
+-- Shared gameplay tuning. BP is an entirely fictional, round-local score.
+-- Upload assets/audio/chase-placeholder.wav to Roblox, grant this experience
+-- access, then set ChaseSoundId to "rbxassetid://YOUR_AUDIO_ASSET_ID".
+local Config = {
+	MinPlayers = 2,
+	IntermissionSeconds = 12,
+	RoundSeconds = 240,
+	ResultsSeconds = 8,
+	BPPerObjective = 25,
+	MaxBP = 100,
+	ObjectiveHoldSeconds = 2,
+	ObjectiveCooldownSeconds = 6,
+	Ranks = {
+		table.freeze({ Name = "LTN", BP = 0 }),
+		table.freeze({ Name = "MTN", BP = 25 }),
+		table.freeze({ Name = "HTN", BP = 50 }),
+		table.freeze({ Name = "Chadlite", BP = 75 }),
+		table.freeze({ Name = "Chad", BP = 100 }),
+	},
+	WalkSpeed = 16,
+	KillerWalkSpeed = 19,
+	CaptureRadius = 4.5,
+	CaptureSeconds = 20,
+	CaptureGraceSeconds = 5,
+	RescueHoldSeconds = 2,
+	EscapeHoldSeconds = 0.5,
+	InteractionDistance = 12,
+	ChaseSoundId = "",
+	ChaseRadius = 65,
+	ChaseFullVolumeRadius = 18,
+	ChaseMaxVolume = 0.65,
+}
+
+table.freeze(Config.Ranks)
+return table.freeze(Config)
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="4">
+        <Properties>
+          <string name="Name">RoundState</string>
+          <string name="Source"><![CDATA[--!strict
+-- Pure, server-owned round state. Roblox adapters validate distance, character
+-- health and prompt hold duration before invoking these rules.
+local Config = if script then require(script.Parent.Config) else require("./Config")
+local Rules = if script then require(script.Parent.Rules) else require("./Rules")
+
+export type Survivor = {
+	BP: number,
+	Status: "Alive" | "Captured" | "Escaped",
+	CapturedUntil: number?,
+	ImmuneUntil: number,
+	LastObjectiveAt: number?,
+}
+
+export type State = {
+	KillerId: number,
+	KillerPresent: boolean,
+	Survivors: { [number]: Survivor },
+	ObjectiveCount: number,
+	ObjectiveGoal: number,
+	StartedAt: number,
+	EndsAt: number,
+	Ended: boolean,
+	Result: string?,
+	EscapedCount: number,
+}
+
+local RoundState = {}
+
+local function finite(value: any): boolean
+	return type(value) == "number" and value == value and math.abs(value) < math.huge
+end
+
+local function active(state: State, now: number): boolean
+	return not state.Ended and finite(now) and now >= state.StartedAt and now < state.EndsAt
+end
+
+function RoundState.new(participantIds: { number }, killerIndex: number, now: number): (State?, string?)
+	if type(participantIds) ~= "table" or #participantIds < Config.MinPlayers then
+		return nil, "At least two players are required."
+	end
+	if not finite(killerIndex) or killerIndex % 1 ~= 0 or killerIndex < 1 or killerIndex > #participantIds then
+		return nil, "Killer index must identify a participant."
+	end
+	if not finite(now) then
+		return nil, "Round start time must be finite."
+	end
+	local seen: { [number]: boolean } = {}
+	local count = 0
+	for index, id in participantIds do
+		if type(index) ~= "number" or index % 1 ~= 0 or index < 1 or index > #participantIds then
+			return nil, "Participants must be a dense array."
+		end
+		if not finite(id) or id % 1 ~= 0 or seen[id] then
+			return nil, "Participant IDs must be unique, finite integers."
+		end
+		seen[id] = true
+		count += 1
+	end
+	if count ~= #participantIds then
+		return nil, "Participants must be a dense array."
+	end
+
+	local killerId = participantIds[killerIndex]
+	local survivors: { [number]: Survivor } = {}
+	for _, id in participantIds do
+		if id ~= killerId then
+			survivors[id] = {
+				BP = 0,
+				Status = "Alive",
+				ImmuneUntil = now + Config.CaptureGraceSeconds,
+			}
+		end
+	end
+	return {
+		KillerId = killerId,
+		KillerPresent = true,
+		Survivors = survivors,
+		ObjectiveCount = 0,
+		ObjectiveGoal = Rules.objectiveGoal(count - 1),
+		StartedAt = now,
+		EndsAt = now + Config.RoundSeconds,
+		Ended = false,
+		EscapedCount = 0,
+	}, nil
+end
+
+function RoundState.objective(state: State, id: number, now: number): boolean
+	local survivor = state.Survivors[id]
+	if not active(state, now) or not survivor or survivor.Status ~= "Alive" then
+		return false
+	end
+	if survivor.LastObjectiveAt and now - survivor.LastObjectiveAt < Config.ObjectiveCooldownSeconds then
+		return false
+	end
+	survivor.LastObjectiveAt = now
+	survivor.BP = math.min(Config.MaxBP, survivor.BP + Config.BPPerObjective)
+	state.ObjectiveCount = math.min(state.ObjectiveGoal, state.ObjectiveCount + 1)
+	return true
+end
+
+function RoundState.capture(state: State, id: number, now: number): boolean
+	local survivor = state.Survivors[id]
+	if not active(state, now) or not survivor or survivor.Status ~= "Alive" or now < survivor.ImmuneUntil then
+		return false
+	end
+	survivor.Status = "Captured"
+	survivor.CapturedUntil = now + Config.CaptureSeconds
+	return true
+end
+
+function RoundState.rescue(state: State, rescuerId: number, targetId: number, now: number): boolean
+	local rescuer = state.Survivors[rescuerId]
+	local target = state.Survivors[targetId]
+	if not active(state, now) or not rescuer or rescuer.Status ~= "Alive" or not target or target.Status ~= "Captured" then
+		return false
+	end
+	target.Status = "Alive"
+	target.CapturedUntil = nil
+	target.ImmuneUntil = now + Config.CaptureGraceSeconds
+	return true
+end
+
+function RoundState.escape(state: State, id: number, now: number): boolean
+	local survivor = state.Survivors[id]
+	if not active(state, now) or not survivor or survivor.Status ~= "Alive" then
+		return false
+	end
+	if survivor.BP < Config.MaxBP or state.ObjectiveCount < state.ObjectiveGoal then
+		return false
+	end
+	survivor.Status = "Escaped"
+	state.EscapedCount += 1
+	return true
+end
+
+function RoundState.releaseExpired(state: State, now: number): { number }
+	local released = {}
+	if not active(state, now) then
+		return released
+	end
+	for id, survivor in state.Survivors do
+		if survivor.Status == "Captured" and survivor.CapturedUntil and now >= survivor.CapturedUntil then
+			survivor.Status = "Alive"
+			survivor.CapturedUntil = nil
+			survivor.ImmuneUntil = now + Config.CaptureGraceSeconds
+			table.insert(released, id)
+		end
+	end
+	return released
+end
+
+function RoundState.removePlayer(state: State, id: number)
+	if state.Ended then
+		return
+	end
+	if id == state.KillerId then
+		state.KillerPresent = false
+		state.Ended = true
+		state.Result = "Survivors win! The OG Chad left the round."
+	else
+		state.Survivors[id] = nil
+	end
+end
+
+function RoundState.updateResult(state: State, now: number): string?
+	if state.Ended then
+		return state.Result
+	end
+	if not finite(now) or now < state.StartedAt then
+		return nil
+	end
+	local remaining = 0
+	local total = 0
+	for _, survivor in state.Survivors do
+		total += 1
+		if survivor.Status ~= "Escaped" then
+			remaining += 1
+		end
+	end
+	if not state.KillerPresent then
+		state.Result = "Survivors win! The OG Chad left the round."
+	elseif total == 0 then
+		state.Result = "Round ended: all survivors left."
+	elseif remaining == 0 then
+		state.Result = string.format("Survivors win! %d escaped.", state.EscapedCount)
+	elseif now >= state.EndsAt then
+		if state.EscapedCount == 0 then
+			state.Result = "OG Chad wins! No survivors escaped before time ran out."
+		else
+			state.Result = string.format("Time is up! %d escaped; %d failed to escape.", state.EscapedCount, remaining)
+		end
+	end
+	if state.Result then
+		state.Ended = true
+	end
+	return state.Result
+end
+
+return table.freeze(RoundState)
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="5">
+        <Properties>
+          <string name="Name">Rules</string>
+          <string name="Source"><![CDATA[--!strict
+-- The string require supports Lune tests; Studio uses the ModuleScript branch.
+local Config = if script then require(script.Parent.Config) else require("./Config")
+
+local Rules = {}
+
+function Rules.rankForBP(points: number): string
+	local name = Config.Ranks[1].Name
+	for _, rank in Config.Ranks do
+		if points >= rank.BP then
+			name = rank.Name
+		end
+	end
+	return name
+end
+
+function Rules.nextRank(points: number): { Name: string, BP: number }?
+	for _, rank in Config.Ranks do
+		if points < rank.BP then
+			return rank
+		end
+	end
+	return nil
+end
+
+function Rules.chaseIntensity(distance: number): number
+	if distance ~= distance then
+		return 0
+	end
+	return math.clamp(
+		(Config.ChaseRadius - distance) / (Config.ChaseRadius - Config.ChaseFullVolumeRadius),
+		0,
+		1
+	)
+end
+
+function Rules.objectiveGoal(survivorCount: number): number
+	return math.max(4, survivorCount * 3)
+end
+
+return table.freeze(Rules)
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="ServerScriptService" referent="6">
+    <Properties>
+      <string name="Name">ServerScriptService</string>
+    </Properties>
+    <Item class="Folder" referent="7">
+      <Properties>
+        <string name="Name">Server</string>
+      </Properties>
+      <Item class="Script" referent="8">
+        <Properties>
+          <string name="Name">Main</string>
+          <token name="RunContext">0</token>
+          <string name="Source"><![CDATA[--!strict
+-- Server authority: clients can only request ProximityPrompt interactions.
+-- All roles, score, captures, rescues, and exits are validated here.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(Shared.Config)
+local Rules = require(Shared.Rules)
+local RoundState = require(Shared.RoundState)
+local World = require(script.Parent.World)
+
+local world = World.create()
+local match = ReplicatedStorage:WaitForChild("MatchState")
+local random = Random.new()
+local round: any = nil
+local phase = "Waiting"
+local holds: { [ProximityPrompt]: { [Player]: { At: number, Round: any } } } = {}
+Players.RespawnTime = 2
+
+local function setPhase(nextPhase: string, message: string)
+	phase = nextPhase
+	match:SetAttribute("Phase", phase)
+	match:SetAttribute("Message", message)
+	world.ObjectivePrompt.Enabled = phase == "Active"
+	world.ExitPrompt.Enabled = phase == "Active"
+	world.RescuePrompt.Enabled = phase == "Active"
+	-- A hold from an earlier phase cannot be reused in a subsequent round.
+	for _, perPlayer in holds do table.clear(perPlayer) end
+end
+
+local function rootOf(player: Player): BasePart?
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
+		return root
+	end
+	return nil
+end
+
+local function survivorSpawn(): CFrame
+	return world.SurvivorSpawns[random:NextInteger(1, #world.SurvivorSpawns)]
+end
+
+local function teleport(player: Player, destination: CFrame)
+	local root = rootOf(player)
+	if root and player.Character then
+		player.Character:PivotTo(destination)
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+	end
+end
+
+local function syncPlayer(player: Player)
+	local survivor = round and round.Survivors[player.UserId]
+	local isKiller = round and round.KillerId == player.UserId
+	local role = if isKiller then "Killer" elseif survivor then "Survivor" else "Lobby"
+	local status = if survivor then survivor.Status elseif isKiller then "Alive"
+		elseif phase == "Active" then "Spectating" else "Lobby"
+	local bp = if survivor then survivor.BP else 0
+	player:SetAttribute("Role", role)
+	player:SetAttribute("Status", status)
+	player:SetAttribute("BP", bp)
+	player:SetAttribute("Rank", if isKiller then "OG Chad" else Rules.rankForBP(bp))
+	local stats = player:FindFirstChild("leaderstats")
+	if stats then
+		local bpValue = stats:FindFirstChild("BP") :: IntValue
+		local rankValue = stats:FindFirstChild("Rank") :: StringValue
+		bpValue.Value = bp
+		rankValue.Value = if isKiller then "OG Chad" else Rules.rankForBP(bp)
+	end
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.WalkSpeed = if isKiller then Config.KillerWalkSpeed else Config.WalkSpeed
+		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+		-- Plain placeholder bodies; no player appearance assets are loaded.
+		local colors = character:FindFirstChildOfClass("BodyColors")
+		if not colors then colors = Instance.new("BodyColors"); colors.Parent = character end
+		local tint = if isKiller then Color3.fromRGB(189, 85, 62) else Color3.fromRGB(101, 139, 151)
+		colors.HeadColor3 = tint
+		colors.TorsoColor3 = tint
+		colors.LeftArmColor3 = tint
+		colors.RightArmColor3 = tint
+		colors.LeftLegColor3 = tint
+		colors.RightLegColor3 = tint
+	end
+end
+
+local function syncMatch()
+	match:SetAttribute("ObjectiveCount", if round then round.ObjectiveCount else 0)
+	match:SetAttribute("ObjectiveGoal", if round then round.ObjectiveGoal else 0)
+	for _, player in Players:GetPlayers() do syncPlayer(player) end
+end
+
+local function placeCharacter(player: Player)
+	syncPlayer(player)
+	if phase ~= "Active" or not round then
+		teleport(player, world.LobbySpawn)
+	elseif player.UserId == round.KillerId then
+		teleport(player, world.KillerSpawn)
+	else
+		local survivor = round.Survivors[player.UserId]
+		if not survivor or survivor.Status == "Escaped" then
+			teleport(player, world.LobbySpawn)
+		elseif survivor.Status == "Captured" then
+			teleport(player, world.CageSpawn)
+		else
+			teleport(player, survivorSpawn())
+		end
+	end
+end
+
+local function onPlayer(player: Player)
+	local stats = Instance.new("Folder")
+	stats.Name = "leaderstats"
+	local bp = Instance.new("IntValue")
+	bp.Name = "BP"
+	bp.Parent = stats
+	local rank = Instance.new("StringValue")
+	rank.Name = "Rank"
+	rank.Parent = stats
+	stats.Parent = player
+	syncPlayer(player)
+	player.CharacterAdded:Connect(function(character)
+		local humanoid = character:WaitForChild("Humanoid", 10) :: Humanoid?
+		local root = character:WaitForChild("HumanoidRootPart", 10)
+		if not humanoid or not root or player.Character ~= character then return end
+		humanoid.Died:Connect(function()
+			-- Resetting cannot erase BP or free a captured survivor.
+			if phase == "Active" and round then
+				RoundState.capture(round, player.UserId, os.clock())
+				syncPlayer(player)
+			end
+		end)
+		placeCharacter(player)
+	end)
+	if player.Character then placeCharacter(player) end
+end
+
+local function nearPrompt(player: Player, prompt: ProximityPrompt): boolean
+	local root = rootOf(player)
+	local target = prompt.Parent
+	if not root or not target or not target:IsA("BasePart") then return false end
+	if (root.Position - target.Position).Magnitude > Config.InteractionDistance then return false end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { player.Character :: Model }
+	local hit = Workspace:Raycast(root.Position, target.Position - root.Position, params)
+	return not hit or hit.Instance == target
+end
+
+local function bindPrompt(prompt: ProximityPrompt, holdSeconds: number, action: (Player, number) -> ())
+	prompt.HoldDuration = holdSeconds
+	local perPlayer: { [Player]: { At: number, Round: any } } = {}
+	holds[prompt] = perPlayer
+	prompt.PromptButtonHoldBegan:Connect(function(player)
+		if phase ~= "Active" or not round or round.Ended then return end
+		local survivor = round.Survivors[player.UserId]
+		if survivor and survivor.Status == "Alive" and nearPrompt(player, prompt) then
+			perPlayer[player] = { At = os.clock(), Round = round }
+		end
+	end)
+	prompt.PromptButtonHoldEnded:Connect(function(player)
+		local hold = perPlayer[player]
+		if not hold then return end
+		-- An early release is a cancellation. A completed release may arrive just
+		-- before Triggered; give that event a short window, never the next hold.
+		if os.clock() - hold.At < holdSeconds - 0.1 then
+			perPlayer[player] = nil
+		else
+			task.delay(0.25, function()
+				if perPlayer[player] == hold then perPlayer[player] = nil end
+			end)
+		end
+	end)
+	prompt.Triggered:Connect(function(player)
+		local hold = perPlayer[player]
+		perPlayer[player] = nil
+		if phase ~= "Active" or not round or round.Ended or not hold or hold.Round ~= round then return end
+		local now = os.clock()
+		local elapsed = now - hold.At
+		if elapsed < holdSeconds - 0.1 or elapsed > holdSeconds + 5 then return end
+		if not nearPrompt(player, prompt) then return end
+		action(player, now)
+		syncMatch()
+		RoundState.updateResult(round, now)
+	end)
+end
+
+bindPrompt(world.ObjectivePrompt, Config.ObjectiveHoldSeconds, function(player, now)
+	if RoundState.objective(round, player.UserId, now) then
+		match:SetAttribute("Message", if round.ObjectiveCount >= round.ObjectiveGoal
+			then "Exit powered. Reach Chad (100 BP), then hold E at the exit."
+			else "Terminal calibrated. +25 fictional BP. Keep the team moving.")
+	end
+end)
+
+bindPrompt(world.ExitPrompt, Config.EscapeHoldSeconds, function(player, now)
+	if RoundState.escape(round, player.UserId, now) then
+		teleport(player, world.LobbySpawn)
+	end
+end)
+
+bindPrompt(world.RescuePrompt, Config.RescueHoldSeconds, function(player, now)
+	local oldestId: number? = nil
+	local oldestExpiry = math.huge
+	for id, survivor in round.Survivors do
+		if survivor.Status == "Captured" and survivor.CapturedUntil < oldestExpiry then
+			oldestId, oldestExpiry = id, survivor.CapturedUntil
+		end
+	end
+	if oldestId and RoundState.rescue(round, player.UserId, oldestId, now) then
+		local rescued = Players:GetPlayerByUserId(oldestId)
+		if rescued then teleport(rescued, survivorSpawn()) end
+		match:SetAttribute("Message", "Rescue successful. Five seconds of capture immunity.")
+	end
+end)
+
+Players.PlayerAdded:Connect(onPlayer)
+Players.PlayerRemoving:Connect(function(player)
+	for _, perPlayer in holds do perPlayer[player] = nil end
+	if round then
+		RoundState.removePlayer(round, player.UserId)
+		RoundState.updateResult(round, os.clock())
+		syncMatch()
+	end
+end)
+for _, player in Players:GetPlayers() do onPlayer(player) end
+
+local function tickRound(now: number)
+	for _, id in RoundState.releaseExpired(round, now) do
+		local player = Players:GetPlayerByUserId(id)
+		if player then teleport(player, survivorSpawn()); syncPlayer(player) end
+	end
+	local killer = Players:GetPlayerByUserId(round.KillerId)
+	local killerRoot = killer and rootOf(killer)
+	if killerRoot then
+		for id, survivor in round.Survivors do
+			if survivor.Status == "Alive" then
+				local player = Players:GetPlayerByUserId(id)
+				local root = player and rootOf(player)
+				if root and (root.Position - killerRoot.Position).Magnitude <= Config.CaptureRadius then
+					local params = RaycastParams.new()
+					params.FilterType = Enum.RaycastFilterType.Exclude
+					params.FilterDescendantsInstances = { killer.Character :: Model, player.Character :: Model }
+					local wall = Workspace:Raycast(killerRoot.Position, root.Position - killerRoot.Position, params)
+					if not wall and RoundState.capture(round, id, now) then
+						teleport(player, world.CageSpawn)
+						syncPlayer(player)
+					end
+				end
+			end
+		end
+	end
+	RoundState.updateResult(round, now)
+	match:SetAttribute("TimeRemaining", math.max(0, math.ceil(round.EndsAt - now)))
+end
+
+setPhase("Waiting", "Waiting for at least two players.")
+match:SetAttribute("TimeRemaining", 0)
+syncMatch()
+
+while true do
+	while #Players:GetPlayers() < Config.MinPlayers do task.wait(0.5) end
+	setPhase("Intermission", "OG Chad is about to be chosen. Your BP resets each round.")
+	local startsAt = os.clock() + Config.IntermissionSeconds
+	while os.clock() < startsAt and #Players:GetPlayers() >= Config.MinPlayers do
+		match:SetAttribute("TimeRemaining", math.max(0, math.ceil(startsAt - os.clock())))
+		task.wait(0.2)
+	end
+	local participants = Players:GetPlayers()
+	if #participants < Config.MinPlayers then
+		setPhase("Waiting", "Waiting for at least two players.")
+		match:SetAttribute("TimeRemaining", 0)
+		continue
+	end
+	local ids = {}
+	for _, player in participants do table.insert(ids, player.UserId) end
+	round = assert(RoundState.new(ids, random:NextInteger(1, #ids), os.clock()))
+	setPhase("Active", "Hold E at the BP terminal. OG Chad captures survivors on contact.")
+	syncMatch()
+	for _, player in participants do placeCharacter(player) end
+	while not round.Ended do
+		tickRound(os.clock())
+		task.wait(0.15)
+	end
+	setPhase("Results", round.Result or "Round complete.")
+	for _, player in Players:GetPlayers() do teleport(player, world.LobbySpawn) end
+	local resultsEnd = os.clock() + Config.ResultsSeconds
+	while os.clock() < resultsEnd do
+		match:SetAttribute("TimeRemaining", math.max(0, math.ceil(resultsEnd - os.clock())))
+		task.wait(0.2)
+	end
+	round = nil
+	setPhase("Waiting", "Waiting for at least two players.")
+	match:SetAttribute("TimeRemaining", 0)
+	syncMatch()
+end
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="9">
+        <Properties>
+          <string name="Name">World</string>
+          <string name="Source"><![CDATA[--!strict
+-- A completely generated, asset-free graybox map. All collision is anchored.
+local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+
+local World = {}
+
+local function part(parent: Instance, name: string, size: Vector3, position: Vector3, color: Color3, material: Enum.Material?): Part
+	local object = Instance.new("Part")
+	object.Name = name
+	object.Anchored = true
+	object.Size = size
+	object.Position = position
+	object.Color = color
+	object.Material = material or Enum.Material.Concrete
+	object.TopSurface = Enum.SurfaceType.Smooth
+	object.BottomSurface = Enum.SurfaceType.Smooth
+	object.Parent = parent
+	return object
+end
+
+local function label(parent: BasePart, text: string, color: Color3, height: number?)
+	local gui = Instance.new("BillboardGui")
+	gui.Name = "WorldLabel"
+	gui.Adornee = parent
+	gui.Size = UDim2.fromOffset(260, 64)
+	gui.StudsOffset = Vector3.new(0, height or 5, 0)
+	gui.MaxDistance = 100
+	gui.AlwaysOnTop = false
+	gui.Parent = parent
+	local textLabel = Instance.new("TextLabel")
+	textLabel.BackgroundTransparency = 0.25
+	textLabel.BackgroundColor3 = Color3.fromRGB(12, 15, 20)
+	textLabel.Size = UDim2.fromScale(1, 1)
+	textLabel.Font = Enum.Font.GothamBold
+	textLabel.TextSize = 18
+	textLabel.TextWrapped = true
+	textLabel.TextColor3 = color
+	textLabel.Text = text
+	textLabel.Parent = gui
+end
+
+local function prompt(parent: BasePart, name: string, action: string, object: string, hold: number): ProximityPrompt
+	local result = Instance.new("ProximityPrompt")
+	result.Name = name
+	result.ActionText = action
+	result.ObjectText = object
+	result.HoldDuration = hold
+	result.MaxActivationDistance = 10
+	result.RequiresLineOfSight = true
+	result.KeyboardKeyCode = Enum.KeyCode.E
+	result.GamepadKeyCode = Enum.KeyCode.ButtonX
+	result.Enabled = false -- Round controller enables interactions at round start.
+	result.Parent = parent
+	return result
+end
+
+local function lamp(parent: Instance, position: Vector3, color: Color3, brightness: number)
+	local fixture = part(parent, "EmergencyLamp", Vector3.new(2, 1, 2), position, color, Enum.Material.Neon)
+	fixture.CanCollide = false
+	local light = Instance.new("PointLight")
+	light.Color = color
+	light.Range = 44
+	light.Brightness = brightness
+	light.Shadows = false
+	light.Parent = fixture
+end
+
+function World.create()
+	local previous = Workspace:FindFirstChild("PrototypeMap")
+	if previous then
+		previous:Destroy()
+	end
+	local map = Instance.new("Folder")
+	map.Name = "PrototypeMap"
+	map.Parent = Workspace
+
+	Lighting.ClockTime = 0
+	Lighting.Brightness = 1
+	Lighting.Ambient = Color3.fromRGB(48, 52, 67)
+	Lighting.OutdoorAmbient = Color3.fromRGB(43, 47, 60)
+	Lighting.FogColor = Color3.fromRGB(20, 24, 35)
+	Lighting.FogStart = 70
+	Lighting.FogEnd = 230
+
+	local concrete = Color3.fromRGB(57, 62, 71)
+	local wallColor = Color3.fromRGB(38, 43, 52)
+	local orange = Color3.fromRGB(255, 160, 66)
+	local cyan = Color3.fromRGB(93, 226, 225)
+	local green = Color3.fromRGB(127, 239, 151)
+	local red = Color3.fromRGB(241, 77, 94)
+	part(map, "ArenaFloor", Vector3.new(204, 2, 204), Vector3.new(0, -1, 0), concrete)
+	part(map, "NorthWall", Vector3.new(204, 20, 4), Vector3.new(0, 10, -102), wallColor)
+	part(map, "SouthWall", Vector3.new(204, 20, 4), Vector3.new(0, 10, 102), wallColor)
+	part(map, "EastWall", Vector3.new(4, 20, 204), Vector3.new(102, 10, 0), wallColor)
+	part(map, "WestWall", Vector3.new(4, 20, 204), Vector3.new(-102, 10, 0), wallColor)
+
+	-- Staggered walls leave multiple routes and a broad circulation path at the edges.
+	for _, geometry in {
+		{ -48, -52, 4, 48 }, { 42, -46, 4, 60 },
+		{ -65, 8, 42, 4 }, { -5, -12, 46, 4 },
+		{ 48, 18, 52, 4 }, { -35, 52, 4, 44 },
+		{ 0, 62, 32, 4 }, { 15, 28, 4, 34 },
+	} do
+		part(map, "CorridorWall", Vector3.new(geometry[3], 13, geometry[4]), Vector3.new(geometry[1], 6.5, geometry[2]), wallColor)
+	end
+	for _, position in { Vector3.new(-70, 3, -25), Vector3.new(70, 3, -25), Vector3.new(-65, 3, 65), Vector3.new(0, 3, 12) } do
+		part(map, "StorageCrate", Vector3.new(10, 6, 10), position, Color3.fromRGB(80, 69, 60), Enum.Material.WoodPlanks)
+	end
+	for _, position in {
+		Vector3.new(-78, 12, -75), Vector3.new(0, 12, -70), Vector3.new(76, 12, -70),
+		Vector3.new(-80, 12, 32), Vector3.new(0, 12, 30), Vector3.new(78, 12, 32),
+		Vector3.new(-65, 12, 85), Vector3.new(20, 12, 85),
+	} do
+		lamp(map, position, orange, 1.1)
+	end
+
+	local objective = part(map, "BPCalibrator", Vector3.new(8, 5, 5), Vector3.new(0, 2.5, -52), Color3.fromRGB(39, 87, 96), Enum.Material.Metal)
+	local screen = part(map, "CalibratorScreen", Vector3.new(6, 2.5, 0.2), Vector3.new(0, 3, -54.61), cyan, Enum.Material.Neon)
+	screen.CanCollide = false
+	screen.CanQuery = false -- Decorative glass must not block terminal interactions.
+	label(objective, "BP CALIBRATOR\nFictional gains. Real panic.", cyan, 6)
+	lamp(map, Vector3.new(0, 9, -52), cyan, 1.6)
+	local objectivePrompt = prompt(objective, "ObjectivePrompt", "Calibrate BP", "BP Calibrator", 2)
+
+	local exit = part(map, "EscapeDoor", Vector3.new(12, 12, 1), Vector3.new(-76, 6, -99), Color3.fromRGB(47, 106, 69), Enum.Material.Metal)
+	label(exit, "ESCAPE\nComplete team calibrations", green, 8)
+	lamp(map, Vector3.new(-76, 13, -95), green, 1.5)
+	local exitPrompt = prompt(exit, "ExitPrompt", "Escape", "Emergency exit", 0.5)
+
+	-- Solid, tall cage walls and a roof keep prisoners inside. The rescue panel
+	-- sits outside its north face, and a rescuer never needs to enter the cage.
+	local cage = Instance.new("Folder")
+	cage.Name = "CaptureCage"
+	cage.Parent = map
+	for _, z in { 55, 75 } do
+		for x = 60, 80, 4 do
+			part(cage, "Bar", Vector3.new(0.7, 18, 0.7), Vector3.new(x, 9, z), Color3.fromRGB(100, 105, 116), Enum.Material.Metal)
+		end
+		local blocker = part(cage, "GlassBarrier", Vector3.new(21, 18, 0.5), Vector3.new(70, 9, z), Color3.fromRGB(65, 75, 90), Enum.Material.Glass)
+		blocker.Transparency = 0.8
+	end
+	for _, x in { 60, 80 } do
+		local side = part(cage, "SideBarrier", Vector3.new(0.7, 18, 20), Vector3.new(x, 9, 65), Color3.fromRGB(65, 75, 90), Enum.Material.Glass)
+		side.Transparency = 0.7
+	end
+	part(cage, "Roof", Vector3.new(21, 1, 21), Vector3.new(70, 18, 65), wallColor, Enum.Material.Metal)
+	local panel = part(map, "RescuePanel", Vector3.new(3, 4, 1), Vector3.new(70, 2, 52), red, Enum.Material.Metal)
+	label(panel, "CAPTURE CAGE\nHold to rescue teammates", red, 6)
+	lamp(map, Vector3.new(70, 11, 50), red, 1.5)
+	local rescuePrompt = prompt(panel, "RescuePrompt", "Rescue teammates", "Cage release", 2)
+
+	-- A separate lobby is the only automatic Roblox spawn. Round placement is
+	-- controlled by the server; joining during a round does not enter the arena.
+	part(map, "LobbyFloor", Vector3.new(72, 2, 52), Vector3.new(0, -1, 170), concrete)
+	for _, geometry in {
+		{ 0, 144, 74, 2 }, { 0, 196, 74, 2 },
+		{ -36, 170, 2, 52 }, { 36, 170, 2, 52 },
+	} do
+		part(map, "LobbyWall", Vector3.new(geometry[3], 18, geometry[4]), Vector3.new(geometry[1], 9, geometry[2]), wallColor)
+	end
+	lamp(map, Vector3.new(-20, 12, 170), cyan, 2)
+	lamp(map, Vector3.new(20, 12, 170), cyan, 2)
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "LobbySpawn"
+	spawn.Anchored = true
+	spawn.Neutral = true
+	spawn.AllowTeamChangeOnTouch = false
+	spawn.Duration = 0
+	spawn.Size = Vector3.new(12, 0.5, 12)
+	spawn.Position = Vector3.new(0, 0.25, 170)
+	spawn.Color = cyan
+	spawn.Material = Enum.Material.Neon
+	spawn.Transparency = 0.45
+	spawn.Parent = map
+	local sign = part(map, "LobbySign", Vector3.new(24, 9, 1), Vector3.new(0, 7, 146), Color3.fromRGB(21, 29, 40))
+	label(sign, "ESCAPE THE CHAD\nWaiting room · 2+ players", cyan, 0)
+
+	return {
+		Objective = objective,
+		ObjectivePrompt = objectivePrompt,
+		Exit = exit,
+		ExitPrompt = exitPrompt,
+		RescuePrompt = rescuePrompt,
+		CageSpawn = CFrame.new(70, 4, 65),
+		SurvivorSpawns = {
+			CFrame.new(-78, 4, 78), CFrame.new(-60, 4, 82),
+			CFrame.new(-82, 4, 48), CFrame.new(-13, 4, 82),
+			CFrame.new(20, 4, 82), CFrame.new(-80, 4, -12),
+		},
+		KillerSpawn = CFrame.new(78, 4, -82),
+		LobbySpawn = CFrame.new(0, 4, 170),
+	}
+end
+
+return World
+]]></string>
+        </Properties>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="SoundService" referent="10">
+    <Properties>
+      <string name="Name">SoundService</string>
+      <bool name="RespectFilteringEnabled">true</bool>
+    </Properties>
+  </Item>
+  <Item class="StarterPlayer" referent="11">
+    <Properties>
+      <string name="Name">StarterPlayer</string>
+      <bool name="LoadCharacterAppearance">false</bool>
+    </Properties>
+    <Item class="StarterPlayerScripts" referent="12">
+      <Properties>
+        <string name="Name">StarterPlayerScripts</string>
+      </Properties>
+      <Item class="Folder" referent="13">
+        <Properties>
+          <string name="Name">Client</string>
+        </Properties>
+        <Item class="LocalScript" referent="14">
+          <Properties>
+            <string name="Name">Main</string>
+            <string name="Source"><![CDATA[--!strict
+-- Presentation only. Roles, objectives, captures, and BP are owned by the server.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
+
+local localPlayer = Players.LocalPlayer
+local shared = ReplicatedStorage:WaitForChild("Shared")
+local Config = require(shared:WaitForChild("Config"))
+local Rules = require(shared:WaitForChild("Rules"))
+local matchState = ReplicatedStorage:WaitForChild("MatchState")
+
+local colors = {
+	Background = Color3.fromRGB(13, 19, 27),
+	Border = Color3.fromRGB(62, 82, 100),
+	Text = Color3.fromRGB(231, 239, 243),
+	Muted = Color3.fromRGB(158, 177, 189),
+	Survivor = Color3.fromRGB(124, 212, 202),
+	Killer = Color3.fromRGB(255, 137, 87),
+	Danger = Color3.fromRGB(241, 79, 79),
+	Chad = Color3.fromRGB(247, 213, 111),
+}
+
+local connections: { RBXScriptConnection } = {}
+local destroyed = false
+
+local screen = Instance.new("ScreenGui")
+screen.Name = "EscapeTheChadHUD"
+screen.ResetOnSpawn = false
+screen.DisplayOrder = 10
+screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screen.Parent = localPlayer:WaitForChild("PlayerGui")
+
+local function panel(name: string, parent: Instance): Frame
+	local frame = Instance.new("Frame")
+	frame.Name = name
+	frame.BackgroundColor3 = colors.Background
+	frame.BackgroundTransparency = 0.12
+	frame.BorderSizePixel = 0
+	frame.Parent = parent
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = frame
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = colors.Border
+	stroke.Transparency = 0.25
+	stroke.Parent = frame
+	return frame
+end
+
+local function label(name: string, parent: Instance, size: number, color: Color3): TextLabel
+	local item = Instance.new("TextLabel")
+	item.Name = name
+	item.BackgroundTransparency = 1
+	item.Font = Enum.Font.GothamMedium
+	item.TextSize = size
+	item.TextColor3 = color
+	item.TextXAlignment = Enum.TextXAlignment.Left
+	item.TextYAlignment = Enum.TextYAlignment.Center
+	item.Text = ""
+	item.Parent = parent
+	return item
+end
+
+local main = panel("MatchPanel", screen)
+main.AnchorPoint = Vector2.new(0.5, 0)
+main.Position = UDim2.new(0.5, 0, 0, 12)
+main.Size = UDim2.new(1, -24, 0, 206)
+local mainLimit = Instance.new("UISizeConstraint")
+mainLimit.MaxSize = Vector2.new(740, math.huge)
+mainLimit.Parent = main
+
+local title = label("Title", main, 21, colors.Text)
+title.Font = Enum.Font.GothamBlack
+title.Position = UDim2.fromOffset(16, 10)
+title.Size = UDim2.new(1, -110, 0, 30)
+title.Text = "ESCAPE THE CHAD"
+
+local timer = label("Timer", main, 28, colors.Text)
+timer.Font = Enum.Font.GothamBold
+timer.TextXAlignment = Enum.TextXAlignment.Right
+timer.Position = UDim2.new(1, -100, 0, 10)
+timer.Size = UDim2.fromOffset(84, 32)
+
+local role = label("Role", main, 13, colors.Survivor)
+role.Position = UDim2.fromOffset(16, 43)
+role.Size = UDim2.new(1, -32, 0, 22)
+
+local message = label("Message", main, 14, colors.Muted)
+message.Position = UDim2.fromOffset(16, 68)
+message.Size = UDim2.new(1, -32, 0, 36)
+message.TextWrapped = true
+
+local objective = label("ObjectiveProgress", main, 13, colors.Text)
+objective.Position = UDim2.fromOffset(16, 107)
+objective.Size = UDim2.new(1, -32, 0, 20)
+
+local progressTrack = Instance.new("Frame")
+progressTrack.Name = "TeamProgress"
+progressTrack.BorderSizePixel = 0
+progressTrack.BackgroundColor3 = Color3.fromRGB(42, 55, 66)
+progressTrack.Position = UDim2.fromOffset(16, 132)
+progressTrack.Size = UDim2.new(1, -32, 0, 5)
+progressTrack.Parent = main
+local progressFill = Instance.new("Frame")
+progressFill.Name = "Fill"
+progressFill.BorderSizePixel = 0
+progressFill.BackgroundColor3 = colors.Survivor
+progressFill.Size = UDim2.fromScale(0, 1)
+progressFill.Parent = progressTrack
+
+local rank = label("BPRank", main, 15, colors.Survivor)
+rank.Font = Enum.Font.GothamBold
+rank.Position = UDim2.fromOffset(16, 144)
+rank.Size = UDim2.new(1, -32, 0, 22)
+local nextRank = label("NextRank", main, 12, colors.Muted)
+nextRank.Position = UDim2.fromOffset(16, 171)
+nextRank.Size = UDim2.new(1, -32, 0, 20)
+nextRank.TextWrapped = true
+
+local footer = panel("Instructions", screen)
+footer.AnchorPoint = Vector2.new(0.5, 1)
+footer.Position = UDim2.new(0.5, 0, 1, -16)
+footer.Size = UDim2.new(1, -24, 0, 66)
+local footerLimit = Instance.new("UISizeConstraint")
+footerLimit.MaxSize = Vector2.new(740, math.huge)
+footerLimit.Parent = footer
+local help = label("Controls", footer, 13, colors.Text)
+help.Position = UDim2.fromOffset(14, 8)
+help.Size = UDim2.new(1, -28, 1, -16)
+help.TextWrapped = true
+
+local chaseWarning = label("ChaseWarning", screen, 18, colors.Danger)
+chaseWarning.Font = Enum.Font.GothamBlack
+chaseWarning.TextStrokeTransparency = 0.35
+chaseWarning.TextXAlignment = Enum.TextXAlignment.Center
+chaseWarning.AnchorPoint = Vector2.new(0.5, 1)
+chaseWarning.Position = UDim2.new(0.5, 0, 1, -92)
+chaseWarning.Size = UDim2.new(1, -24, 0, 28)
+chaseWarning.Text = "OG CHAD IS NEAR"
+chaseWarning.Visible = false
+
+local chaseBorder = Instance.new("Frame")
+chaseBorder.Name = "ChaseBorder"
+chaseBorder.BackgroundTransparency = 1
+chaseBorder.Position = UDim2.fromOffset(5, 5)
+chaseBorder.Size = UDim2.new(1, -10, 1, -10)
+chaseBorder.Parent = screen
+local dangerStroke = Instance.new("UIStroke")
+dangerStroke.Thickness = 5
+dangerStroke.Color = colors.Danger
+dangerStroke.Transparency = 1
+dangerStroke.Parent = chaseBorder
+
+local chaseSound = Instance.new("Sound")
+chaseSound.Name = "ChadChase"
+chaseSound.Looped = true
+chaseSound.Volume = 0
+local configuredAudio = tostring(Config.ChaseSoundId or "")
+local hasAudio = configuredAudio:match("^rbxassetid://%d+$") ~= nil
+if hasAudio then
+	chaseSound.SoundId = configuredAudio
+end
+chaseSound.Parent = SoundService
+
+local function stringAttribute(instance: Instance, name: string, fallback: string): string
+	local value = instance:GetAttribute(name)
+	return if type(value) == "string" then value else fallback
+end
+
+local function numberAttribute(instance: Instance, name: string, fallback: number): number
+	local value = instance:GetAttribute(name)
+	return if type(value) == "number" then value else fallback
+end
+
+local function updateHUD()
+	local phase = stringAttribute(matchState, "Phase", "Waiting")
+	local currentRole = stringAttribute(localPlayer, "Role", "Lobby")
+	local status = stringAttribute(localPlayer, "Status", "Lobby")
+	local seconds = math.max(0, math.ceil(numberAttribute(matchState, "TimeRemaining", 0)))
+	local points = numberAttribute(localPlayer, "BP", 0)
+	local currentRank = stringAttribute(localPlayer, "Rank", Rules.rankForBP(points))
+	local completed = numberAttribute(matchState, "ObjectiveCount", 0)
+	local goal = numberAttribute(matchState, "ObjectiveGoal", 0)
+	timer.Text = if phase == "Waiting" then "--:--" else string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+	local roleText = if currentRole == "Killer" then "OG CHAD" elseif currentRole == "Survivor" then "SURVIVOR" else "LOBBY"
+	role.Text = string.upper(phase) .. "  /  " .. roleText .. "  /  " .. string.upper(status)
+	role.TextColor3 = if currentRole == "Killer" then colors.Killer else colors.Survivor
+	message.Text = stringAttribute(matchState, "Message", "Waiting for more players...")
+	if goal > 0 then
+		objective.Text = string.format("TEAM OBJECTIVES  %d / %d%s", completed, goal, if completed >= goal then "  •  EXIT POWERED" else "")
+	else
+		objective.Text = "TEAM OBJECTIVES  •  Awaiting next round"
+	end
+	progressFill.Size = UDim2.fromScale(if goal > 0 then math.clamp(completed / goal, 0, 1) else 0, 1)
+	if currentRole == "Survivor" then
+		rank.Text = string.format("%s  •  %d BP", string.upper(currentRank), points)
+		rank.TextColor3 = if currentRank == "Chad" then colors.Chad else colors.Survivor
+		local upcoming = Rules.nextRank(points)
+		nextRank.Text = if upcoming then string.format("%d BP until %s", math.max(0, upcoming.BP - points), upcoming.Name) else "CHAD ACHIEVED  •  Escape once the team powers the exit"
+	else
+		rank.Text = if currentRole == "Killer" then "OG CHAD  •  THE ORIGINAL MENACE" else "LTN → MTN → HTN → CHADLITE → CHAD"
+		rank.TextColor3 = if currentRole == "Killer" then colors.Killer else colors.Muted
+		nextRank.Text = "Fictional ranks. Very real cardio."
+	end
+	if status == "Captured" then
+		help.Text = "CAPTURED  •  A teammate can rescue you at the cage. You will also be released when your capture timer expires."
+	elseif status == "Escaped" then
+		help.Text = "YOU ESCAPED  •  Your jawline has left the building. Wait here for the next round."
+	elseif status == "Spectating" then
+		help.Text = "You joined during a round. Relax in the lobby; you will enter the next match."
+	elseif currentRole == "Killer" and phase == "Active" then
+		help.Text = "Catch survivors by making contact. Guard the terminal and escape door. Captured survivors can be rescued."
+	elseif currentRole == "Survivor" and phase == "Active" then
+		help.Text = "Hold E / the prompt at the terminal for BP. Reach Chad + power the exit to escape. Rescue allies at the cage."
+	else
+		help.Text = "One OG Chad. Everyone else starts LTN. Work together, climb the fictional ranks, and escape."
+	end
+	if not hasAudio then
+		nextRank.Text ..= "  •  Audio upload pending"
+	end
+end
+
+-- A local billboard exists for every survivor, including players who join later.
+-- AlwaysOnTop=false prevents rank labels from revealing survivors through walls.
+type PlayerView = {
+	Connections: { RBXScriptConnection },
+	Gui: BillboardGui?,
+	NameLabel: TextLabel?,
+	RankLabel: TextLabel?,
+	Generation: number,
+}
+local playerViews: { [Player]: PlayerView } = {}
+
+local function refreshBillboard(player: Player)
+	local view = playerViews[player]
+	if not view or not view.Gui or not view.NameLabel or not view.RankLabel then
+		return
+	end
+	local currentRole = stringAttribute(player, "Role", "Lobby")
+	local status = stringAttribute(player, "Status", "Lobby")
+	view.Gui.Enabled = currentRole == "Survivor" and (status == "Alive" or status == "Captured")
+	view.NameLabel.Text = player.DisplayName
+	view.RankLabel.Text = stringAttribute(player, "Rank", "LTN") .. (if status == "Captured" then " • CAPTURED" else "")
+	view.RankLabel.TextColor3 = if status == "Captured" then colors.Danger elseif player:GetAttribute("Rank") == "Chad" then colors.Chad else colors.Survivor
+end
+
+local function removeBillboard(view: PlayerView)
+	view.Generation += 1
+	if view.Gui then
+		view.Gui:Destroy()
+	end
+	view.Gui = nil
+	view.NameLabel = nil
+	view.RankLabel = nil
+end
+
+local function attachBillboard(player: Player, character: Model)
+	local view = playerViews[player]
+	if not view then
+		return
+	end
+	removeBillboard(view)
+	local generation = view.Generation
+	task.spawn(function()
+		local head = character:WaitForChild("Head", 5)
+		if destroyed or not head or not head:IsA("BasePart") or playerViews[player] ~= view or view.Generation ~= generation or player.Character ~= character then
+			return
+		end
+		local billboard = Instance.new("BillboardGui")
+		billboard.Name = "SurvivorBPRank"
+		billboard.Adornee = head
+		billboard.AlwaysOnTop = false
+		billboard.MaxDistance = 45
+		billboard.Size = UDim2.fromOffset(200, 44)
+		billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.4, 0)
+		billboard.Parent = head
+		local nameLabel = label("PlayerName", billboard, 12, colors.Text)
+		nameLabel.Size = UDim2.fromScale(1, 0.45)
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Center
+		nameLabel.TextStrokeTransparency = 0.3
+		local rankLabel = label("Rank", billboard, 14, colors.Survivor)
+		rankLabel.Font = Enum.Font.GothamBold
+		rankLabel.Position = UDim2.fromScale(0, 0.45)
+		rankLabel.Size = UDim2.fromScale(1, 0.55)
+		rankLabel.TextXAlignment = Enum.TextXAlignment.Center
+		rankLabel.TextStrokeTransparency = 0.3
+		view.Gui = billboard
+		view.NameLabel = nameLabel
+		view.RankLabel = rankLabel
+		refreshBillboard(player)
+	end)
+end
+
+local function trackPlayer(player: Player)
+	if playerViews[player] then
+		return
+	end
+	local view: PlayerView = { Connections = {}, Gui = nil, NameLabel = nil, RankLabel = nil, Generation = 0 }
+	playerViews[player] = view
+	table.insert(view.Connections, player.CharacterAdded:Connect(function(character)
+		attachBillboard(player, character)
+	end))
+	table.insert(view.Connections, player.CharacterRemoving:Connect(function()
+		removeBillboard(view)
+	end))
+	for _, attribute in { "Role", "Status", "Rank", "BP" } do
+		table.insert(view.Connections, player:GetAttributeChangedSignal(attribute):Connect(function()
+			refreshBillboard(player)
+		end))
+	end
+	if player.Character then
+		attachBillboard(player, player.Character)
+	end
+end
+
+local function untrackPlayer(player: Player)
+	local view = playerViews[player]
+	if not view then
+		return
+	end
+	playerViews[player] = nil
+	for _, connection in view.Connections do
+		connection:Disconnect()
+	end
+	removeBillboard(view)
+end
+
+local function livingRoot(player: Player): BasePart?
+	local character = player.Character
+	if not character then
+		return nil
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
+		return root
+	end
+	return nil
+end
+
+local targetIntensity = 0
+local currentIntensity = 0
+local audioRequested = false
+local sampleTime = 0
+local eligible = false
+
+local function sampleChase()
+	eligible = matchState:GetAttribute("Phase") == "Active"
+		and localPlayer:GetAttribute("Role") == "Survivor"
+		and localPlayer:GetAttribute("Status") == "Alive"
+	local survivorRoot = if eligible then livingRoot(localPlayer) else nil
+	if not survivorRoot then
+		eligible = false
+		targetIntensity = 0
+		return
+	end
+	local distance = math.huge
+	for _, player in Players:GetPlayers() do
+		if player:GetAttribute("Role") == "Killer" then
+			local killerRoot = livingRoot(player)
+			if killerRoot then
+				distance = math.min(distance, (killerRoot.Position - survivorRoot.Position).Magnitude)
+			end
+		end
+	end
+	if distance == math.huge then
+		-- The killer disconnected or died: the chase is over immediately.
+		eligible = false
+		targetIntensity = 0
+	else
+		targetIntensity = Rules.chaseIntensity(distance)
+	end
+end
+
+table.insert(connections, RunService.Heartbeat:Connect(function(deltaTime: number)
+	sampleTime += deltaTime
+	if sampleTime >= 0.1 then
+		sampleTime = 0
+		sampleChase()
+	end
+	-- End/capture/death turns sound off immediately, while ordinary distance changes fade.
+	if not eligible then
+		currentIntensity = 0
+		audioRequested = false
+		if chaseSound.IsPlaying then
+			chaseSound:Stop()
+		end
+	else
+		currentIntensity += (targetIntensity - currentIntensity) * (1 - math.exp(-deltaTime * 5))
+		if targetIntensity > 0 and hasAudio and not audioRequested then
+			audioRequested = true
+			if not chaseSound.IsPlaying then
+				chaseSound:Play()
+			end
+		elseif targetIntensity == 0 and currentIntensity < 0.005 then
+			audioRequested = false
+			if chaseSound.IsPlaying then
+				chaseSound:Stop()
+			end
+		end
+	end
+	chaseSound.Volume = math.clamp(currentIntensity * Config.ChaseMaxVolume, 0, 1)
+	dangerStroke.Transparency = 1 - currentIntensity * 0.7
+	chaseWarning.Visible = eligible and currentIntensity > 0.12
+end))
+
+local viewportConnection: RBXScriptConnection? = nil
+local function resize()
+	local camera = workspace.CurrentCamera
+	local narrow = camera ~= nil and camera.ViewportSize.X < 520
+	title.TextSize = if narrow then 16 else 21
+	role.TextSize = if narrow then 11 else 13
+	objective.TextSize = if narrow then 11 else 13
+	nextRank.TextSize = if narrow then 11 else 12
+	nextRank.Size = UDim2.new(1, -32, 0, if narrow then 38 else 20)
+	main.Size = UDim2.new(1, -24, 0, if narrow then 220 else 206)
+	footer.Size = UDim2.new(1, -24, 0, if narrow then 86 else 66)
+	help.TextSize = if narrow then 12 else 13
+	chaseWarning.Position = UDim2.new(0.5, 0, 1, if narrow then -112 else -92)
+end
+
+local function trackCamera()
+	if viewportConnection then
+		viewportConnection:Disconnect()
+		viewportConnection = nil
+	end
+	local camera = workspace.CurrentCamera
+	if camera then
+		viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(resize)
+	end
+	resize()
+end
+
+table.insert(connections, workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(trackCamera))
+table.insert(connections, matchState.AttributeChanged:Connect(updateHUD))
+table.insert(connections, localPlayer.AttributeChanged:Connect(updateHUD))
+table.insert(connections, Players.PlayerAdded:Connect(trackPlayer))
+table.insert(connections, Players.PlayerRemoving:Connect(untrackPlayer))
+for _, player in Players:GetPlayers() do
+	trackPlayer(player)
+end
+trackCamera()
+updateHUD()
+
+script.Destroying:Connect(function()
+	destroyed = true
+	for _, connection in connections do
+		connection:Disconnect()
+	end
+	if viewportConnection then
+		viewportConnection:Disconnect()
+	end
+	for player in playerViews do
+		untrackPlayer(player)
+	end
+	chaseSound:Destroy()
+	screen:Destroy()
+end)
+]]></string>
+          </Properties>
+        </Item>
+      </Item>
+    </Item>
+  </Item>
+  <Item class="Workspace" referent="15">
+    <Properties>
+      <string name="Name">Workspace</string>
+      <bool name="FilteringEnabled">true</bool>
+      <bool name="NeedsPivotMigration">false</bool>
+    </Properties>
+  </Item>
+</roblox>
