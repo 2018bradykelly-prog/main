@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
 
 local localPlayer = Players.LocalPlayer
 local shared = ReplicatedStorage:WaitForChild("Shared")
@@ -11,147 +12,28 @@ local Config = require(shared:WaitForChild("Config"))
 local Rules = require(shared:WaitForChild("Rules"))
 local matchState = ReplicatedStorage:WaitForChild("MatchState")
 
-local colors = {
-	Background = Color3.fromRGB(13, 19, 27),
-	Border = Color3.fromRGB(62, 82, 100),
-	Text = Color3.fromRGB(231, 239, 243),
-	Muted = Color3.fromRGB(158, 177, 189),
-	Survivor = Color3.fromRGB(124, 212, 202),
-	Killer = Color3.fromRGB(255, 137, 87),
-	Danger = Color3.fromRGB(241, 79, 79),
-	Chad = Color3.fromRGB(247, 213, 111),
-}
-
+local Hud = require(script.Parent:WaitForChild("Hud"))
+local colors = Hud.Colors
+local label = Hud.label
 local connections: { RBXScriptConnection } = {}
 local destroyed = false
+local ui = Hud.create(localPlayer:WaitForChild("PlayerGui"))
+local screen, timer, role = ui.Screen, ui.Timer, ui.Role
+local message, objective, progressFill = ui.Message, ui.Objective, ui.ProgressFill
+local rank, nextRank, help = ui.Rank, ui.NextRank, ui.Help
+local chaseWarning, dangerStroke = ui.ChaseWarning, ui.DangerStroke
 
-local screen = Instance.new("ScreenGui")
-screen.Name = "EscapeTheChadHUD"
-screen.ResetOnSpawn = false
-screen.DisplayOrder = 10
-screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screen.Parent = localPlayer:WaitForChild("PlayerGui")
-
-local function panel(name: string, parent: Instance): Frame
-	local frame = Instance.new("Frame")
-	frame.Name = name
-	frame.BackgroundColor3 = colors.Background
-	frame.BackgroundTransparency = 0.12
-	frame.BorderSizePixel = 0
-	frame.Parent = parent
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 8)
-	corner.Parent = frame
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = colors.Border
-	stroke.Transparency = 0.25
-	stroke.Parent = frame
-	return frame
-end
-
-local function label(name: string, parent: Instance, size: number, color: Color3): TextLabel
-	local item = Instance.new("TextLabel")
-	item.Name = name
-	item.BackgroundTransparency = 1
-	item.Font = Enum.Font.GothamMedium
-	item.TextSize = size
-	item.TextColor3 = color
-	item.TextXAlignment = Enum.TextXAlignment.Left
-	item.TextYAlignment = Enum.TextYAlignment.Center
-	item.Text = ""
-	item.Parent = parent
-	return item
-end
-
-local main = panel("MatchPanel", screen)
-main.AnchorPoint = Vector2.new(0.5, 0)
-main.Position = UDim2.new(0.5, 0, 0, 12)
-main.Size = UDim2.new(1, -24, 0, 206)
-local mainLimit = Instance.new("UISizeConstraint")
-mainLimit.MaxSize = Vector2.new(740, math.huge)
-mainLimit.Parent = main
-
-local title = label("Title", main, 21, colors.Text)
-title.Font = Enum.Font.GothamBlack
-title.Position = UDim2.fromOffset(16, 10)
-title.Size = UDim2.new(1, -110, 0, 30)
-title.Text = "ESCAPE THE CHAD"
-
-local timer = label("Timer", main, 28, colors.Text)
-timer.Font = Enum.Font.GothamBold
-timer.TextXAlignment = Enum.TextXAlignment.Right
-timer.Position = UDim2.new(1, -100, 0, 10)
-timer.Size = UDim2.fromOffset(84, 32)
-
-local role = label("Role", main, 13, colors.Survivor)
-role.Position = UDim2.fromOffset(16, 43)
-role.Size = UDim2.new(1, -32, 0, 22)
-
-local message = label("Message", main, 14, colors.Muted)
-message.Position = UDim2.fromOffset(16, 68)
-message.Size = UDim2.new(1, -32, 0, 36)
-message.TextWrapped = true
-
-local objective = label("ObjectiveProgress", main, 13, colors.Text)
-objective.Position = UDim2.fromOffset(16, 107)
-objective.Size = UDim2.new(1, -32, 0, 20)
-
-local progressTrack = Instance.new("Frame")
-progressTrack.Name = "TeamProgress"
-progressTrack.BorderSizePixel = 0
-progressTrack.BackgroundColor3 = Color3.fromRGB(42, 55, 66)
-progressTrack.Position = UDim2.fromOffset(16, 132)
-progressTrack.Size = UDim2.new(1, -32, 0, 5)
-progressTrack.Parent = main
-local progressFill = Instance.new("Frame")
-progressFill.Name = "Fill"
-progressFill.BorderSizePixel = 0
-progressFill.BackgroundColor3 = colors.Survivor
-progressFill.Size = UDim2.fromScale(0, 1)
-progressFill.Parent = progressTrack
-
-local rank = label("BPRank", main, 15, colors.Survivor)
-rank.Font = Enum.Font.GothamBold
-rank.Position = UDim2.fromOffset(16, 144)
-rank.Size = UDim2.new(1, -32, 0, 22)
-local nextRank = label("NextRank", main, 12, colors.Muted)
-nextRank.Position = UDim2.fromOffset(16, 171)
-nextRank.Size = UDim2.new(1, -32, 0, 20)
-nextRank.TextWrapped = true
-
-local footer = panel("Instructions", screen)
-footer.AnchorPoint = Vector2.new(0.5, 1)
-footer.Position = UDim2.new(0.5, 0, 1, -16)
-footer.Size = UDim2.new(1, -24, 0, 66)
-local footerLimit = Instance.new("UISizeConstraint")
-footerLimit.MaxSize = Vector2.new(740, math.huge)
-footerLimit.Parent = footer
-local help = label("Controls", footer, 13, colors.Text)
-help.Position = UDim2.fromOffset(14, 8)
-help.Size = UDim2.new(1, -28, 1, -16)
-help.TextWrapped = true
-
-local chaseWarning = label("ChaseWarning", screen, 18, colors.Danger)
-chaseWarning.Font = Enum.Font.GothamBlack
-chaseWarning.TextStrokeTransparency = 0.35
-chaseWarning.TextXAlignment = Enum.TextXAlignment.Center
-chaseWarning.AnchorPoint = Vector2.new(0.5, 1)
-chaseWarning.Position = UDim2.new(0.5, 0, 1, -92)
-chaseWarning.Size = UDim2.new(1, -24, 0, 28)
-chaseWarning.Text = "OG CHAD IS NEAR"
-chaseWarning.Visible = false
-
-local chaseBorder = Instance.new("Frame")
-chaseBorder.Name = "ChaseBorder"
-chaseBorder.BackgroundTransparency = 1
-chaseBorder.Position = UDim2.fromOffset(5, 5)
-chaseBorder.Size = UDim2.new(1, -10, 1, -10)
-chaseBorder.Parent = screen
-local dangerStroke = Instance.new("UIStroke")
-dangerStroke.Thickness = 5
-dangerStroke.Color = colors.Danger
-dangerStroke.Transparency = 1
-dangerStroke.Parent = chaseBorder
+table.insert(connections, ui.HelpButton.Activated:Connect(function()
+	ui.setHelpVisible(not ui.Details.Visible)
+end))
+table.insert(connections, ui.Close.Activated:Connect(function() ui.setHelpVisible(false) end))
+table.insert(connections, ui.Hide.Activated:Connect(function() ui.setHudVisible(false) end))
+table.insert(connections, ui.Restore.Activated:Connect(function() ui.setHudVisible(true) end))
+table.insert(connections, UserInputService.InputBegan:Connect(function(input, processed)
+	if not processed and not UserInputService:GetFocusedTextBox() and input.KeyCode == Enum.KeyCode.H then
+		ui.setHelpVisible(not ui.Details.Visible)
+	end
+end))
 
 local chaseSound = Instance.new("Sound")
 chaseSound.Name = "ChadChase"
@@ -185,14 +67,15 @@ local function updateHUD()
 	local goal = numberAttribute(matchState, "ObjectiveGoal", 0)
 	timer.Text = if phase == "Waiting" then "--:--" else string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
 	local roleText = if currentRole == "Killer" then "OG CHAD" elseif currentRole == "Survivor" then "SURVIVOR" else "LOBBY"
-	role.Text = string.upper(phase) .. "  /  " .. roleText .. "  /  " .. string.upper(status)
+	role.Text = roleText .. (if status == "Captured" or status == "Escaped" then " • " .. string.upper(status) else "")
 	role.TextColor3 = if currentRole == "Killer" then colors.Killer else colors.Survivor
 	message.Text = stringAttribute(matchState, "Message", "Waiting for more players...")
 	if goal > 0 then
-		objective.Text = string.format("TEAM OBJECTIVES  %d / %d%s", completed, goal, if completed >= goal then "  •  EXIT POWERED" else "")
+		objective.Text = string.format("TERMINAL %d/%d%s", completed, goal, if completed >= goal then " • EXIT OPEN" else "")
 	else
-		objective.Text = "TEAM OBJECTIVES  •  Awaiting next round"
+		objective.Text = if phase == "Intermission" then "Round starting soon" else "Waiting for 2 players"
 	end
+	if phase == "Results" then objective.Text = "Round over • Help for results" end
 	progressFill.Size = UDim2.fromScale(if goal > 0 then math.clamp(completed / goal, 0, 1) else 0, 1)
 	if currentRole == "Survivor" then
 		rank.Text = string.format("%s  •  %d BP", string.upper(currentRank), points)
@@ -200,7 +83,7 @@ local function updateHUD()
 		local upcoming = Rules.nextRank(points)
 		nextRank.Text = if upcoming then string.format("%d BP until %s", math.max(0, upcoming.BP - points), upcoming.Name) else "CHAD ACHIEVED  •  Escape once the team powers the exit"
 	else
-		rank.Text = if currentRole == "Killer" then "OG CHAD  •  THE ORIGINAL MENACE" else "LTN → MTN → HTN → CHADLITE → CHAD"
+		rank.Text = if currentRole == "Killer" then "Catch survivors on contact" else "ESCAPE THE CHAD"
 		rank.TextColor3 = if currentRole == "Killer" then colors.Killer else colors.Muted
 		nextRank.Text = "Fictional ranks. Very real cardio."
 	end
@@ -213,12 +96,9 @@ local function updateHUD()
 	elseif currentRole == "Killer" and phase == "Active" then
 		help.Text = "Catch survivors by making contact. Guard the terminal and escape door. Captured survivors can be rescued."
 	elseif currentRole == "Survivor" and phase == "Active" then
-		help.Text = "Hold E / the prompt at the terminal for BP. Reach Chad + power the exit to escape. Rescue allies at the cage."
+		help.Text = "Hold E at the cyan terminal for BP (6s cooldown). Reach Chad + power the exit to escape. Rescue allies at the cage."
 	else
 		help.Text = "One OG Chad. Everyone else starts LTN. Work together, climb the fictional ranks, and escape."
-	end
-	if not hasAudio then
-		nextRank.Text ..= "  •  Audio upload pending"
 	end
 end
 
@@ -409,16 +289,7 @@ end))
 local viewportConnection: RBXScriptConnection? = nil
 local function resize()
 	local camera = workspace.CurrentCamera
-	local narrow = camera ~= nil and camera.ViewportSize.X < 520
-	title.TextSize = if narrow then 16 else 21
-	role.TextSize = if narrow then 11 else 13
-	objective.TextSize = if narrow then 11 else 13
-	nextRank.TextSize = if narrow then 11 else 12
-	nextRank.Size = UDim2.new(1, -32, 0, if narrow then 38 else 20)
-	main.Size = UDim2.new(1, -24, 0, if narrow then 220 else 206)
-	footer.Size = UDim2.new(1, -24, 0, if narrow then 86 else 66)
-	help.TextSize = if narrow then 12 else 13
-	chaseWarning.Position = UDim2.new(0.5, 0, 1, if narrow then -112 else -92)
+	if camera then ui.resize(camera.ViewportSize) end
 end
 
 local function trackCamera()

@@ -7,6 +7,9 @@ A Roblox multiplayer survival horror prototype. One randomly selected **OG Chad*
 1. Download/open `build/escape-the-chad.rbxlx` in Roblox Studio on Windows or macOS. The cloud build is already available. To recreate it from source, use the commands below.
 2. In Studio's **Test** controls, choose **Server & Clients** (called **Local Server** in some versions), select **2 clients** or preferably **3**, and start the session. Regular solo Play deliberately waits for a second player.
 3. After the 12-second intermission, exactly one player becomes OG Chad. Everyone else spawns as an LTN survivor. The map and HUD are generated when the server starts, so an empty editor viewport before Play is expected.
+
+The HUD is compact by default. Click **Help** or press **H** for instructions, then **Close** to dismiss them. Click **X** on the status panel to hide it; the small **HUD** button brings it back. These buttons also support touch. New round messages and respawns do not reopen dismissed instructions.
+
 4. As a survivor, hold **E** at the cyan **BP Calibrator** for 2 seconds. Each accepted calibration gives 25 BP; wait **6 seconds between completions per player**. Gamepad X and touch prompts also work.
 5. Ranks are **LTN (0) → MTN (25) → HTN (50) → Chadlite (75) → Chad (100)**. The HUD, overhead labels, and player list display them. The team needs `max(4, survivors × 3)` calibrations to power the green exit. The terminal remains usable after the team goal so everyone can finish their personal rank.
 6. At 100 BP, hold E at the green exit to escape once the team goal is complete. Escaped players wait safely in the lobby.
@@ -64,14 +67,16 @@ rojo build default.project.json -o build/escape-the-chad.rbxlx
 lune run tests/rules.spec.luau
 lune run tests/place.spec.luau
 lune run tests/world.spec.luau
+lune run tests/hud.spec.luau
 ```
 
 Verified in this cloud session:
 
 - 22 rule scenarios, 251 assertions: unique killer assignment, rank thresholds, cooldowns, role restrictions, capture/rescue/immunity, auto-release, escapes, disconnects, timeouts, reset, chase-distance curve.
-- Compilation of all 6 source files and 26 checks against the built place hierarchy/source contents.
+- Compilation of all 7 source files and 28 checks against the built place hierarchy/source contents.
 - Actual map creation using Lune's Roblox instance model: 98 checks, spawn clearance, sealed cage, interaction-ray clearance, and connected walking routes to interactions.
 - Live Rojo server handshake and project snapshot retrieval: 17 instances served successfully.
+- HUD construction, compact sizing, help dismissal, hiding/restoring and viewport checks using the actual HUD module. This does not simulate Studio input or rendering.
 - Original WAV generated, checked for valid format/nonzero signal, and reproduced deterministically.
 
 These are automated code/build/map tests. They do **not** run Roblox networking, physics, UI rendering, prompt signal delivery, character spawning, or audio playback. Complete the Studio checklist before calling the prototype playtested. CI runs the same automated tests and uploads the place; CI itself has not yet run remotely.
@@ -97,6 +102,7 @@ src/shared/RoundState.luau     Pure server-owned round state machine
 src/server/Main.server.luau    Multiplayer lifecycle, validated interactions
 src/server/World.luau          Generated map, prompts, lighting and spawns
 src/client/Main.client.luau    HUD, rank labels, local chase audio
+src/client/Hud.luau            Compact status and dismissible instructions
 tests/                        Rule, build and map validation
 assets/audio/                 Original WAV and audio notes
 tools/                        Bootstrap, check runner and audio generator

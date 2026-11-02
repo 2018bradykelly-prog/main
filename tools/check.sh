@@ -7,3 +7,4 @@ rojo build default.project.json -o build/escape-the-chad.rbxlx
 lune run tests/rules.spec.luau
 lune run tests/place.spec.luau
 lune run tests/world.spec.luau
+lune run tests/hud.spec.luau

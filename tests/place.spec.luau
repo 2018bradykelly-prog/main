@@ -58,6 +58,9 @@ checks += 1
 local starterScripts = child(starterPlayer, "StarterPlayerScripts", "StarterPlayerScripts")
 local client = child(starterScripts, "Client", "Folder")
 local mainClient = child(client, "Main", "LocalScript")
+local hud = child(client, "Hud", "ModuleScript")
+assert(hud.Source == fs.readFile("src/client/Hud.luau"), "Built HUD source is stale")
+checks += 1
 assert(mainClient.Source == fs.readFile("src/client/Main.client.luau"), "Built client script is stale")
 assert(not mainClient.Disabled, "Client script is disabled")
 checks += 2
