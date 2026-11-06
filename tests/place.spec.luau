@@ -18,7 +18,7 @@ local function collect(directory: string)
 end
 collect("src")
 table.sort(scripts)
-assert(#scripts >= 6, "Expected server, client and shared Luau sources")
+assert(#scripts >= 12, "Expected server, client and shared Luau sources")
 for _, path in scripts do
 	local ok, result = pcall(luau.compile, fs.readFile(path))
 	assert(ok, path .. " failed compilation: " .. tostring(result))
@@ -38,7 +38,10 @@ end
 local storage = child(place, "ReplicatedStorage", "ReplicatedStorage")
 local shared = child(storage, "Shared", "Folder")
 child(storage, "MatchState", "Folder")
-for _, name in { "Config", "Rules", "RoundState" } do
+local remotes = child(storage, "Remotes", "Folder")
+child(remotes, "Action", "RemoteEvent")
+child(remotes, "Notify", "RemoteEvent")
+for _, name in { "Config", "Rules", "RoundState", "Abilities", "Maps" } do
 	local module = child(shared, name, "ModuleScript")
 	assert(module.Source == fs.readFile("src/shared/" .. name .. ".luau"), name .. " source differs from artifact")
 	checks += 1
@@ -49,18 +52,22 @@ local mainServer = child(server, "Main", "Script")
 assert(mainServer.Source == fs.readFile("src/server/Main.server.luau"), "Built server script is stale")
 assert(not mainServer.Disabled, "Server script is disabled")
 checks += 2
-local world = child(server, "World", "ModuleScript")
-assert(world.Source == fs.readFile("src/server/World.luau"), "Built world source is stale")
-checks += 1
+for _, name in { "World", "DataService" } do
+	local module = child(server, name, "ModuleScript")
+	assert(module.Source == fs.readFile("src/server/" .. name .. ".luau"), name .. " source is stale")
+	checks += 1
+end
 local starterPlayer = child(place, "StarterPlayer", "StarterPlayer")
 assert(not starterPlayer.LoadCharacterAppearance, "Placeholder characters must not load user appearance")
 checks += 1
 local starterScripts = child(starterPlayer, "StarterPlayerScripts", "StarterPlayerScripts")
 local client = child(starterScripts, "Client", "Folder")
 local mainClient = child(client, "Main", "LocalScript")
-local hud = child(client, "Hud", "ModuleScript")
-assert(hud.Source == fs.readFile("src/client/Hud.luau"), "Built HUD source is stale")
-checks += 1
+for _, name in { "Hud", "Movement", "Effects" } do
+	local module = child(client, name, "ModuleScript")
+	assert(module.Source == fs.readFile("src/client/" .. name .. ".luau"), name .. " source is stale")
+	checks += 1
+end
 assert(mainClient.Source == fs.readFile("src/client/Main.client.luau"), "Built client script is stale")
 assert(not mainClient.Disabled, "Client script is disabled")
 checks += 2

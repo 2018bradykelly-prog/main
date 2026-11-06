@@ -3,23 +3,46 @@
   "tree": {
     "$className": "DataModel",
     "ReplicatedStorage": {
-      "Shared": { "$path": "src/shared" },
-      "MatchState": { "$className": "Folder" }
+      "Shared": {
+        "$path": "src/shared"
+      },
+      "MatchState": {
+        "$className": "Folder"
+      },
+      "Remotes": {
+        "$className": "Folder",
+        "Action": {
+          "$className": "RemoteEvent"
+        },
+        "Notify": {
+          "$className": "RemoteEvent"
+        }
+      }
     },
     "ServerScriptService": {
-      "Server": { "$path": "src/server" }
+      "Server": {
+        "$path": "src/server"
+      }
     },
     "StarterPlayer": {
-      "$properties": { "LoadCharacterAppearance": false },
+      "$properties": {
+        "LoadCharacterAppearance": false
+      },
       "StarterPlayerScripts": {
-        "Client": { "$path": "src/client" }
+        "Client": {
+          "$path": "src/client"
+        }
       }
     },
     "Workspace": {
-      "$properties": { "FilteringEnabled": true }
+      "$properties": {
+        "FilteringEnabled": true
+      }
     },
     "SoundService": {
-      "$properties": { "RespectFilteringEnabled": true }
+      "$properties": {
+        "RespectFilteringEnabled": true
+      }
     }
   }
 }
