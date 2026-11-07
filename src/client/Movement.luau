@@ -118,6 +118,11 @@ function Movement.update(self: Controller, dt: number)
 		self.Sprinting = false
 		speed = if status == "Downed" and player:GetAttribute("Hidden") ~= true then Config.DownedSpeed else 0
 		humanoid.JumpHeight = 0
+		-- Downed survivors lie on the floor; keep the camera down with them.
+		humanoid.CameraOffset = humanoid.CameraOffset:Lerp(
+			if status == "Downed" then Vector3.new(0, -2, 0) else Vector3.zero,
+			math.clamp(dt * 8, 0, 1)
+		)
 	else
 		local canSprint = self:wantsSprint() and moving and not self.Exhausted and self.Stamina > 0
 		self.Sprinting = canSprint

@@ -18,7 +18,7 @@ local function collect(directory: string)
 end
 collect("src")
 table.sort(scripts)
-assert(#scripts >= 12, "Expected server, client and shared Luau sources")
+assert(#scripts >= 13, "Expected server, client and shared Luau sources")
 for _, path in scripts do
 	local ok, result = pcall(luau.compile, fs.readFile(path))
 	assert(ok, path .. " failed compilation: " .. tostring(result))
@@ -63,7 +63,7 @@ checks += 1
 local starterScripts = child(starterPlayer, "StarterPlayerScripts", "StarterPlayerScripts")
 local client = child(starterScripts, "Client", "Folder")
 local mainClient = child(client, "Main", "LocalScript")
-for _, name in { "Hud", "Movement", "Effects" } do
+for _, name in { "Hud", "Movement", "Effects", "Poses" } do
 	local module = child(client, name, "ModuleScript")
 	assert(module.Source == fs.readFile("src/client/" .. name .. ".luau"), name .. " source is stale")
 	checks += 1

@@ -23,6 +23,7 @@ local notifyRemote = remotes:WaitForChild("Notify") :: RemoteEvent
 local Hud = require(script.Parent:WaitForChild("Hud"))
 local Movement = require(script.Parent:WaitForChild("Movement"))
 local Effects = require(script.Parent:WaitForChild("Effects"))
+local Poses = require(script.Parent:WaitForChild("Poses"))
 local colors = Hud.Colors
 
 local connections: { RBXScriptConnection } = {}
@@ -32,6 +33,9 @@ local movement = Movement.new(localPlayer)
 
 local function connect(signal: RBXScriptSignal, callback: (...any) -> ())
 	table.insert(connections, signal:Connect(callback))
+end
+for _, connection in Poses.start() do
+	table.insert(connections, connection)
 end
 
 -- Resetting your character would be an escape from carries and cages.
@@ -343,6 +347,7 @@ connect(notifyRemote.OnClientEvent, function(payload: any)
 		local attacker = Players:GetPlayerByUserId(payload.Id)
 		if attacker then
 			Effects.swing(attacker)
+			Poses.swing(attacker)
 		end
 	elseif kind == "Hit" and type(payload.Id) == "number" then
 		local victim = Players:GetPlayerByUserId(payload.Id)

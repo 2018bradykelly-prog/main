@@ -58,6 +58,8 @@ Regenerate these from the real map builder with `lune run tools/render_maps.luau
 ### UI
 Compact match panel (role, timer, BP rank, terminal progress), team list with live status and cage timers, stamina and status banner, ability bar with cooldowns (all buttons work on touch), toast feed, role-reveal splash, lobby panel (profile, XP bar, loadout, map vote), results screen with XP and level-ups, and spectating once you're out. **H** or **Help** shows role-specific instructions; **X** hides the status panel and **HUD** brings it back.
 
+**Poses:** without any animation assets, characters are posed in code. Downed survivors lie face down and pull themselves along, carried survivors hang limp over the Chad's shoulder, caged survivors slump, injured survivors hunch, and the Chad does an overhead chop when attacking. These poses need the default R15 avatars; R6 characters keep their normal animations.
+
 Controls also work on gamepad: A jump/vault/wiggle, X interact, B slide, Y ability, L3 sprint toggle, L1 Mog Aura, R2 attack.
 
 ## Original chase audio — one manual asset step
@@ -114,7 +116,7 @@ lune run tests/hud.spec.luau
 What the automated checks cover:
 
 - **Rules** (34 scenarios, 400 assertions): role assignment, ranks, terminal cooldown/overheat, endgame collapse, hits/injured/downed, lockers and grabs, pickup, rate-limited wiggling, cage timers and elimination, lucky escapes, revive/heal/rescue rewards, escapes, all win/lose results, disconnects, invalid timestamps, XP, levels, titles, map voting and the ability catalogue.
-- **Place build:** compiles all 12 source files and checks 41 properties of the built place (scripts, modules, remotes).
+- **Place build:** compiles all 13 source files and checks 43 properties of the built place (scripts, modules, remotes).
 - **Maps:** builds the lobby and every arena with Lune's Roblox instance model: 784 checks, including walkable routes, sealed cages, spawn clearance, prompt configuration and both sides of every vault window.
 - **HUD** (68 checks): construction, help/hide/restore, viewport fitting from phone to desktop, team list, ability bar and cooldowns, toasts, loadout, map vote, profile and results.
 
@@ -127,6 +129,7 @@ These tests do **not** run Roblox networking, physics, character animation, UI r
 - [ ] Terminals: hold E for BP; the overheated screen turns red; the Chad sees a ping. A short hold, the Chad, or a too-distant player get nothing.
 - [ ] Sprint drains stamina, exhaustion works, slide works, survivors vault windows quickly, the Chad vaults slowly and can't jump over sills.
 - [ ] Chad attack: first hit injures (speed burst), second downs. Missing slows the Chad. Smoke blocks hits.
+- [ ] Downed survivors lie down and crawl; carried survivors hang over the Chad's shoulder; the Chad's attack swings; poses reset after revive/release.
 - [ ] Pick up a downed survivor; wiggle free; Jawline Flash frees a carried survivor and blinds the Chad.
 - [ ] Cage a survivor; rescue from the panel; struggle attempts; cage timeout eliminates; third cage eliminates.
 - [ ] Lockers: hide (camera peeks out), leave, the Chad searches and grabs the hider.
@@ -150,6 +153,7 @@ src/client/Main.client.luau     Input, prompt filtering, HUD updates, camera, no
 src/client/Hud.luau             All UI construction
 src/client/Movement.luau        Stamina sprint, slide, vaulting, dash
 src/client/Effects.luau         Chase audio, reveal, pings, flashes, scratch marks
+src/client/Poses.luau           Procedural downed/carried/caged/injured/attack poses
 tests/                          Rule, build, map and HUD validation
 tools/                          Bootstrap, checks, map renderer, audio generator
 docs/maps/                      Generated top-down map layouts
